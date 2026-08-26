@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Bosque de Aventuras 4.2 - RPG</title>
+  <style>
+    body {
+      margin: 0;
+      background: #0b120c;
+      color: #e0f0e0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    canvas {
+      border: 4px solid #3d2b1f;
+      border-radius: 10px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.9);
+      background: #1b3318;
+    }
+    .controls {
+      margin-top: 10px;
+      font-size: 14px;
+      color: #8cb887;
+    }
+    kbd {
+      background: #333;
+      color: #fff;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid #555;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Bosque de Aventuras v4.2</h2>
+  <canvas id="gameCanvas" width="900" height="550"></canvas>
+  <div class="controls">
+    Movimiento: <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> / Flechas | Atacar: <kbd>ESPACIO</kbd> | Meta: <b>Nivel 99 o Derrotar al Boss</b>
+  </div>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+const keys = {};
+window.addEventListener("keydown", e => keys[e.code] = true);
+window.addEventListener("keyup", e => keys[e.code] = false);
+
+// Jugador
+const player = {
+  x: 120,
+  y: 275,
+  radius: 14,
+  speed: 3.5,
+  hp: 50,
+  maxHp: 50,
+  level: 1,
+  xp: 0,
+  nextXp: 30,
+  attackCooldown: 0,
+  lastDamageTakenTime: 0
+};
+
+// Lagos
+const lakes = [
+  { x: 250, y: 150, r: 70 },
+  { x: 650, y: 400, r: 90 },
+  { x: 450, y: 300, r: 50 }
+];
+
+// Caminos de tierra
+const paths = [
+  { x: 0, y: 255, w: 900, h: 40 },
+  { x: 430, y: 0, w: 40, h: 550 }
+];
+
+let potions = [];
+
+const lowMonsterNames = ["Rata", "Goblin", "Serpiente", "Lobo", "Orco", "Esqueleto", "Troll", "Araña", "Slime"];
+const midMonsterNames = ["Manticora", "Beholder", "Golem", "Nigromante", "Wyvern", "Licántropo", "Demonio Mayor", "Gran Cíclope", "Vampiro"];
+const highMonsterNames = ["Leviatán", "Señor de las Sombras", "Fénix Oscuro", "Bégimo", "Arquidemonio", "Dragón Dorado"];
+
+let monsters = [];
+let bossAttacked = false;
+
+function spawnDynamicMonster() {
+  let lvl;
+
+  if (player.level >= 50) {
+    if (Math.random() < 0.5) {
+      lvl = Math.floor(Math.random() * 9) + 1;
+    } else {
+      lvl = Math.floor(Math.random() * 21) + 40;
+    }
+  } else {
+    if (Math.random() < 0.6) {
+      lvl = Math.floor(Math.random() * 9) + 1;
+    } else {
+      lvl = Math.floor(Math.random() * 41) + 10;
+    }
+  }
+
+  let name = "";
+  if (lvl <= 9) {
+    name = lowMonsterNames[(lvl - 1) % lowMonsterNames.length];
+  } else if (lvl <= 39) {
+    name = midMonsterNames[lvl % midMonsterNames.length];
+  } else {
+    name = highMonsterNames[lvl % highMonsterNames.length];
+  }
+
+  const hue = (lvl * 13) % 360;
+  const radius = lvl <= 9 ? (10 + Math.floor(lvl / 2)) : (15 + Math.floor(lvl / 4));
+
+  spawnMonsterAt(lvl, name, `hsl(${hue}, 75%, 40%)`, radius);
+}
+
+function spawnBoss() {
+  monsters.push({
+    x: 800,
+    y: 100,
+    radius: 30,
+    level: 99,
+    name: "★ DRAGÓN SUPREMO (Nvl 99) ★",
+    color: "#ff0033",
+    hp: 1500,
+    maxHp: 1500,
+    attackTimer: 0,
+    isBoss: true,
+    hasEngaged: false
+  });
+}
+
+function spawnMonsterAt(lvl, name, color, radius) {
+  let x, y, validPos = false;
+  let attempts = 0;
+  while (!validPos && attempts < 50) {
+    x = Math.random() * 840 + 30;
+    y = Math.random() * 490 + 30;
+    const distPlayer = Math.hypot(x - player.x, y - player.y);
+    const collideLake = lakes.some(l => Math.hypot(x - l.x, y - l.y) < l.r + radius + 10);
+    if (distPlayer > 150 && !collideLake) validPos = true;
+    attempts++;
+  }
+
+  monsters.push({
+    x, y,
+    radius: radius,
+    level: lvl,
+    name: name,
+    color: color,
+    hp: lvl * 15,
+    maxHp: lvl * 15,
+    attackTimer: 0,
+    isBoss: false,
+    hasEngaged: false
+  });
+}
+
+// Inicialización
+for (let i = 0; i < 9; i++) spawnDynamicMonster();
+spawnBoss();
+
+// Generación periódica de enemigos
+setInterval(() => {
+  const normalMonstersCount = monsters.filter(m => !m.isBoss).length;
+  const maxLimit = player.level >= 40 ? 15 : 10;
+  if (normalMonstersCount < maxLimit) {
+    spawnDynamicMonster();
+    if (player.level >= 40 && normalMonstersCount + 1 < maxLimit) {
+      const lvl = Math.floor(Math.random() * 9) + 1;
+      const name = lowMonsterNames[(lvl - 1) % lowMonsterNames.length];
+      spawnMonsterAt(lvl, name, `hsl(${lvl * 35}, 65%, 45%)`, 10 + Math.floor(lvl / 2));
+    }
+  }
+}, 1200);
+
+let floatingTexts = [];
+function addFloatingText(x, y, text, color) {
+  floatingTexts.push({ x, y, text, color, alpha: 1.0, life: 45 });
+}
+
+let gameOver = false;
+let gameWon = false;
+let winReason = "";
+
+function update() {
+  if (gameOver || gameWon) return;
+
+  const now = Date.now();
+
+  let nextX = player.x;
+  let nextY = player.y;
+
+  if (keys["KeyW"] || keys["ArrowUp"]) nextY -= player.speed;
+  if (keys["KeyS"] || keys["ArrowDown"]) nextY += player.speed;
+  if (keys["KeyA"] || keys["ArrowLeft"]) nextX -= player.speed;
+  if (keys["KeyD"] || keys["ArrowRight"]) nextX += player.speed;
+
+  nextX = Math.max(player.radius, Math.min(canvas.width - player.radius, nextX));
+  nextY = Math.max(player.radius, Math.min(canvas.height - player.radius, nextY));
+
+  let collideLake = lakes.some(l => Math.hypot(nextX - l.x, nextY - l.y) < l.r + player.radius);
+  if (!collideLake) {
+    player.x = nextX;
+    player.y = nextY;
+  }
+
+  // Regeneración de Vida
+  const timeSinceLastDamage = now - player.lastDamageTakenTime;
+  if (timeSinceLastDamage >= 2000 && player.hp < player.maxHp) {
+    player.hp = Math.min(player.maxHp, player.hp + (player.maxHp / 1800));
+  }
+
+  // Pociones
+  potions.forEach((pot, i) => {
+    if (Math.hypot(player.x - pot.x, player.y - pot.y) < player.radius + 12) {
+      player.hp = player.maxHp;
+      addFloatingText(player.x, player.y - 20, "¡POCIÓN 100% HP!", "#00ffff");
+      potions.splice(i, 1);
+    }
+  });
+
+  // Ataque del Jugador
+  if (player.attackCooldown > 0) player.attackCooldown--;
+
+  if (keys["Space"] && player.attackCooldown === 0) {
+    player.attackCooldown = 16;
+    let hit = false;
+
+    monsters.forEach((m, index) => {
+      const dist = Math.hypot(player.x - m.x, player.y - m.y);
+      if (dist < m.radius + player.radius + 22) {
+        const dmg = Math.floor(Math.random() * 10) + 1;
+        m.hp -= dmg;
+        hit = true;
+        m.hasEngaged = true;
+        addFloatingText(m.x, m.y - 10, `-${dmg}`, "#ff4d4d");
+
+        if (m.isBoss) {
+          bossAttacked = true;
+          addFloatingText(player.x, player.y - 45, "¡ALERTA DE ENJAMBRE!", "#ff2222");
+        }
+
+        if (m.hp <= 0) {
+          let xpGained = m.level * 25;
+          if (player.level >= 40) xpGained *= 2;
+
+          player.xp += xpGained;
+          const xpText = player.level >= 40 ? `+${xpGained} XP (x2)` : `+${xpGained} XP`;
+          addFloatingText(m.x, m.y - 25, xpText, "#ffd700");
+
+          if (m.level <= 9 && Math.random() < 0.35) {
+            potions.push({ x: m.x, y: m.y });
+          }
+
+          if (m.isBoss) {
+            gameWon = true;
+            winReason = "¡Has derrotado al Boss Final!";
+          }
+
+          monsters.splice(index, 1);
+        }
+      }
+    });
+
+    if (!hit) addFloatingText(player.x, player.y - 20, "¡Fallo!", "#aaaaaa");
+
+    while (player.xp >= player.nextXp) {
+      player.level++;
+      player.xp -= player.nextXp;
+      player.nextXp = Math.floor(30 * Math.pow(1.07, player.level));
+      player.maxHp += 12;
+      player.hp = player.maxHp;
+      addFloatingText(player.x, player.y - 35, `¡LEVEL UP! (Nvl ${player.level})`, "#00ffff");
+
+      if (player.level >= 99) {
+        gameWon = true;
+        winReason = "¡Has alcanzado el Nivel 99!";
+      }
+    }
+  }
+
+  // MOVIMIENTO Y PERSECUCIÓN DE MONSTRUOS
+  monsters.forEach(m => {
+    const dx = player.x - m.x;
+    const dy = player.y - m.y;
+    const dist = Math.hypot(dx, dy);
+
+    let shouldChase = false;
+
+    if (m.isBoss) {
+      if (player.level >= 80 || m.hasEngaged) shouldChase = true;
+    } else if (player.level >= 50) {
+      shouldChase = true;
+      m.hasEngaged = true;
+    } else if (m.level <= 9) {
+      if (dist < 140 || m.hasEngaged || bossAttacked) {
+        shouldChase = true;
+        m.hasEngaged = true;
+      }
+    } else {
+      if (m.hasEngaged) shouldChase = true;
+    }
+
+    if (shouldChase && dist > m.radius + 5) {
+      let speed;
+      if (m.level <= 9) {
+        speed = 2.8;
+      } else if (m.isBoss || m.level >= 40) {
+        speed = 0.4;
+      } else {
+        speed = 1.8;
+      }
+
+      m.x += (dx / dist) * speed;
+      m.y += (dy / dist) * speed;
+    }
+
+    // Ataque del monstruo
+    if (dist <= m.radius + player.radius + 5) {
+      m.hasEngaged = true;
+      m.attackTimer++;
+      if (m.attackTimer > 40) {
+        const maxDmg = m.isBoss ? 28 : Math.min(m.level, 18);
+        const mDmg = Math.floor(Math.random() * maxDmg) + 1;
+        player.hp = Math.max(0, player.hp - mDmg);
+        player.lastDamageTakenTime = now;
+        addFloatingText(player.x, player.y - 15, `-${mDmg}`, "#ff9900");
+        m.attackTimer = 0;
+
+        if (player.hp <= 0) gameOver = true;
+      }
+    }
+  });
+
+  // PREVENCIÓN DE SUPERPOSICIÓN GENERAL (TODOS LOS MONSTRUOS)
+  for (let i = 0; i < monsters.length; i++) {
+    for (let j = i + 1; j < monsters.length; j++) {
+      const m1 = monsters[i];
+      const m2 = monsters[j];
+
+      const dx = m2.x - m1.x;
+      const dy = m2.y - m1.y;
+      const dist = Math.hypot(dx, dy);
+      const minDist = m1.radius + m2.radius;
+
+      if (dist < minDist && dist > 0) {
+        const overlap = minDist - dist;
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        // Repulsión física entre cualquier par de criaturas
+        m1.x -= nx * (overlap / 2);
+        m1.y -= ny * (overlap / 2);
+        m2.x += nx * (overlap / 2);
+        m2.y += ny * (overlap / 2);
+      }
+    }
+  }
+
+  floatingTexts.forEach((ft, i) => {
+    ft.y -= 0.7;
+    ft.life--;
+    ft.alpha = ft.life / 45;
+    if (ft.life <= 0) floatingTexts.splice(i, 1);
+  });
+}
+
+function draw() {
+  ctx.fillStyle = "#1b3318";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "#7a5c3b";
+  paths.forEach(p => ctx.fillRect(p.x, p.y, p.w, p.h));
+
+  lakes.forEach(l => {
+    ctx.fillStyle = "#1b4f72";
+    ctx.beginPath();
+    ctx.arc(l.x, l.y, l.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#2874a6";
+    ctx.lineWidth = 4;
+    ctx.stroke();
+  });
+
+  potions.forEach(p => {
+    ctx.fillStyle = "#ff0055";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+
+  monsters.forEach(m => {
+    ctx.fillStyle = m.color;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = m.isBoss ? "#ffff00" : (m.hasEngaged ? "#ff2222" : "#000000");
+    ctx.lineWidth = m.isBoss ? 4 : (m.hasEngaged ? 3 : 2);
+    ctx.stroke();
+
+    ctx.fillStyle = m.isBoss ? "#ffdd00" : "#ffffff";
+    ctx.font = m.isBoss ? "bold 12px sans-serif" : "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(m.isBoss ? "LVL 99 BOSS" : `Lvl ${m.level}`, m.x, m.y - m.radius - 8);
+
+    const barW = m.radius * 2;
+    ctx.fillStyle = "#333";
+    ctx.fillRect(m.x - barW/2, m.y - m.radius - 5, barW, 4);
+    ctx.fillStyle = m.isBoss ? "#ff0000" : "#00ff44";
+    ctx.fillRect(m.x - barW/2, m.y - m.radius - 5, (Math.max(0, m.hp) / m.maxHp) * barW, 4);
+  });
+
+  ctx.fillStyle = "#2b7cff";
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = "#e60000";
+  ctx.beginPath();
+  ctx.arc(player.x, player.y - 2, player.radius * 0.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(player.x - 4, player.y + 3, 3, 3);
+  ctx.fillRect(player.x + 1, player.y + 3, 3, 3);
+
+  floatingTexts.forEach(ft => {
+    ctx.fillStyle = ft.color;
+    ctx.globalAlpha = ft.alpha;
+    ctx.font = "bold 13px sans-serif";
+    ctx.fillText(ft.text, ft.x, ft.y);
+    ctx.globalAlpha = 1.0;
+  });
+
+  // HUD
+  ctx.fillStyle = "rgba(11, 18, 12, 0.9)";
+  ctx.fillRect(10, 10, 350, 80);
+  ctx.strokeStyle = "#3d2b1f";
+  ctx.strokeRect(10, 10, 350, 80);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "left";
+  ctx.font = "bold 14px sans-serif";
+  const xpBonusText = player.level >= 40 ? " (XP x2)" : "";
+  ctx.fillText(`Héroe - Nivel ${player.level} / 99${xpBonusText}`, 20, 30);
+
+  const now = Date.now();
+  const timeSinceDamage = now - player.lastDamageTakenTime;
+  const inCombat = timeSinceDamage < 2000;
+  ctx.font = "10px sans-serif";
+  ctx.fillStyle = inCombat ? "#ff6666" : "#66ff66";
+  ctx.fillText(inCombat ? "En combate (Sin regen)" : "Regenerando vida...", 220, 30);
+
+  ctx.fillStyle = "#770000";
+  ctx.fillRect(20, 38, 150, 12);
+  ctx.fillStyle = "#00e640";
+  ctx.fillRect(20, 38, (player.hp / player.maxHp) * 150, 12);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 11px sans-serif";
+  ctx.fillText(`HP: ${Math.ceil(player.hp)}/${player.maxHp}`, 180, 48);
+
+  ctx.fillStyle = "#555500";
+  ctx.fillRect(20, 58, 150, 10);
+  ctx.fillStyle = "#ffcc00";
+  ctx.fillRect(20, 58, (player.xp / player.nextXp) * 150, 10);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "10px sans-serif";
+  ctx.fillText(`XP: ${player.xp}/${player.nextXp}`, 180, 67);
+
+  if (gameOver) {
+    ctx.fillStyle = "rgba(0,0,0,0.88)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#ff3333";
+    ctx.font = "bold 42px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("¡GAME OVER!", canvas.width / 2, canvas.height / 2 - 10);
+    ctx.font = "18px sans-serif";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText("Has sido derrotado en batalla. Recarga para reintentar.", canvas.width / 2, canvas.height / 2 + 35);
+    return;
+  }
+
+  if (gameWon) {
+    ctx.fillStyle = "rgba(0,0,0,0.88)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#00ffff";
+    ctx.font = "bold 42px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("¡VICTORIA LEGENDARIA!", canvas.width / 2, canvas.height / 2 - 15);
+    ctx.font = "20px sans-serif";
+    ctx.fillStyle = "#ffd700";
+    ctx.fillText(winReason, canvas.width / 2, canvas.height / 2 + 25);
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    update();
+    draw();
+  });
+}
+
+draw();
+</script>
+</body>
+</html>
